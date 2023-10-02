@@ -1,11 +1,11 @@
 /*
- * Arduino Oscilloscope using a 128x64 OLED Version 1.30
+ * Arduino Oscilloscope using a 128x64 OLED Version 1.31
  * The max realtime sampling rates are 17.2ksps with 2 channels and 307ksps with a channel.
  * The max equivalent time sampling rates is 16Msps with single channel.
  * + Pulse Generator
  * + PWM DDS Function Generator (8 waveforms)
  * + Frequency Counter
- * Copyright (c) 2022, Siliconvalley4066
+ * Copyright (c) 2023, Siliconvalley4066
  */
 /*
  * Arduino Oscilloscope using a graphic LCD
@@ -874,9 +874,9 @@ void loop() {
     } else if (rate == 1) { // channel 0 only 5.1us sampling
       sample_51us();
     } else if (rate == 2) { // channel 0 only 10us sampling
-      sample_100us();
+      sample_100us(10);
     } else if (rate == 3) { // channel 0 only 20us sampling
-      sample_200us(20, ad_ch0);
+      sample_100us(20);
     } else if (rate == 4) { // channel 0 only 49us sampling
       sample_200us(50, ad_ch0);
     } else if (rate == 5) { // full speed, dual channel 64us sampling
@@ -1005,8 +1005,6 @@ void sample_dual_640us() { // dual channel full speed. 64us sampling (0x4)
     sample_200us(64, ad_ch0);
   } else if (ch0_mode == MODE_OFF && ch1_mode != MODE_OFF) {
     sample_200us(64, ad_ch1);
-    memcpy(data[1], data[0], SAMPLES);
-    memset(data[0], 0, SAMPLES);
   } else {
     byte *p0, *p1;
     ADCSRA = (ADCSRA & 0xf8) | 0x04;  // dividing ratio = 16(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
@@ -1029,7 +1027,6 @@ void sample_dual_us(unsigned int r) { // dual channel. r > 67 (0x4)
       *p0++ = adRead(ad_ch0, ch0_mode, ch0_off);
       st += r;
     }
-    memset(data[1], 0, SAMPLES);
   } else if (ch0_mode == MODE_OFF && ch1_mode != MODE_OFF) {
     unsigned long st = micros();
     for (int i=0; i<SAMPLES; i ++) {
@@ -1037,7 +1034,6 @@ void sample_dual_us(unsigned int r) { // dual channel. r > 67 (0x4)
       *p1++ = adRead(ad_ch1, ch1_mode, ch1_off);
       st += r;
     }
-    memset(data[0], 0, SAMPLES);
   } else {
     unsigned long st = micros();
     for (int i=0; i<SAMPLES; i ++) {
@@ -1061,14 +1057,15 @@ void sample_dual_ms(unsigned int r) { // dual channel. r > 500 (0x7)
     if (ch1_mode != MODE_OFF)
       data[1][i] = adRead(ad_ch1, ch1_mode, ch1_off);
   }
-  if (ch0_mode == MODE_OFF) memset(data[0], 0, SAMPLES);
-//  if (ch1_mode == MODE_OFF) memset(data[1], 0, SAMPLES);
 }
 
 void sample_200us(unsigned int r, byte ad_ch) { // analogRead() with timing, channel 0 or 1. 200us/div 50ksps
   int *idata;
+  if (ad_ch == ad_ch0)
+    idata = (int *) data[0];
+  else
+    idata = (int *) data[1];
   ADCSRA = (ADCSRA & 0xf8) | 0x04;  // dividing ratio = 8(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
-  idata = (int *) data[0];
   unsigned long st = micros();
   for (byte i=0; i<SAMPLES; i ++) {
     while(micros() - st < r) ;
@@ -1078,9 +1075,8 @@ void sample_200us(unsigned int r, byte ad_ch) { // analogRead() with timing, cha
   scaleDataArray(ad_ch);
 }
 
-void sample_100us() { // register direct with timing, channel 0 only. 100us/div 100ksps
+void sample_100us(byte r) { // register direct with timing, channel 0 only. 100us/div 100ksps
   byte *pdata;
-  byte r = 10;
   ADMUX = (ADMUX & 0xf8) + ad_ch0;
   ADCSRA = (ADCSRA & 0xf8) | 0x02;  // dividing ratio = 8(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
   pdata = data[0];
