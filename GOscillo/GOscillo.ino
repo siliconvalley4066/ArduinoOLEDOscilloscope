@@ -1,5 +1,5 @@
 /*
- * Arduino Oscilloscope using a 128x64 OLED Version 1.31
+ * Arduino Oscilloscope using a 128x64 OLED Version 1.32
  * The max realtime sampling rates are 17.2ksps with 2 channels and 307ksps with a channel.
  * The max equivalent time sampling rates is 16Msps with single channel.
  * + Pulse Generator
@@ -83,11 +83,11 @@ const int TRIG_E_DN = 1;
 #define RATE_MAX 19
 #define RATE_NUM 27
 #define ITEM_MAX 29
-const char RN[RATE_NUM][5] PROGMEM = {"33us", "49us", "100u", "200u", "500u", "640u", "800u", " 1ms", " 2ms", " 5ms", "10ms", "20ms", "50ms", "0.1s", "0.2s", "0.5s", " 1s ", " 2s ", " 5s ", " 10s",
+const char RN[RATE_NUM][5] PROGMEM = {"33us", "49us", "100u", "200u", "500u", "600u", "800u", " 1ms", " 2ms", " 5ms", "10ms", "20ms", "50ms", "0.1s", "0.2s", "0.5s", " 1s ", " 2s ", " 5s ", " 10s",
                                       "0.6u", "1.3u", "3.1u", "6.3u", "13us", "31us", "63us"};
 const char * const Rates[RATE_NUM] PROGMEM = {RN[0], RN[1], RN[2], RN[3], RN[4], RN[5], RN[6], RN[7], RN[8], RN[9], RN[10], RN[11], RN[12], RN[13], RN[14], RN[15], RN[16], RN[17], RN[18], RN[19],
                                               RN[20], RN[21], RN[22], RN[23], RN[24], RN[25], RN[26]};
-const unsigned long HREF[] PROGMEM = {33, 49, 100, 200, 500, 640, 800, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000, 2000000, 5000000, 10000000};
+const unsigned long HREF[] PROGMEM = {33, 49, 100, 200, 500, 600, 800, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000, 2000000, 5000000, 10000000};
 #define RANGE_MIN 0
 #define RANGE_MAX 4
 #define VRF 5
@@ -871,16 +871,16 @@ void loop() {
 
     if (rate == 0) { // full speed, channel 0 only 3.25us sampling
       sample_33us();
-    } else if (rate == 1) { // channel 0 only 5.1us sampling
-      sample_51us();
+    } else if (rate == 1) { // channel 0 only 4.9us sampling
+      sample_49us();
     } else if (rate == 2) { // channel 0 only 10us sampling
-      sample_100us(10);
+      sample_100us(10, ad_ch0);
     } else if (rate == 3) { // channel 0 only 20us sampling
-      sample_100us(20);
-    } else if (rate == 4) { // channel 0 only 49us sampling
-      sample_200us(50, ad_ch0);
-    } else if (rate == 5) { // full speed, dual channel 64us sampling
-      sample_dual_640us();
+      sample_100us(20, ad_ch0);
+    } else if (rate == 4) { // channel 0 only 50us sampling
+      sample_100us(50, ad_ch0);
+    } else if (rate == 5) { // full speed, dual channel 60us sampling
+      sample_dual_600us();
     } else if (rate >= 6 && rate <= 8) {  // dual channel 80us, 100us, 200us sampling
       sample_dual_us(pgm_read_dword(&HREF[rate]) / 10);
     } else {                // dual channel .5ms, 1ms, 2ms, 5ms, 10ms, 20ms sampling
@@ -1000,11 +1000,11 @@ void measure_voltage() {
   display.print(F("min"));  display.print(vmin); if (vmin >= 0.0) display.print('V');
 }
 
-void sample_dual_640us() { // dual channel full speed. 64us sampling (0x4)
+void sample_dual_600us() { // dual channel full speed. 60us sampling (0x4)
   if (ch0_mode != MODE_OFF && ch1_mode == MODE_OFF) {
-    sample_200us(64, ad_ch0);
+    sample_100us(60, ad_ch0);
   } else if (ch0_mode == MODE_OFF && ch1_mode != MODE_OFF) {
-    sample_200us(64, ad_ch1);
+    sample_100us(60, ad_ch1);
   } else {
     byte *p0, *p1;
     ADCSRA = (ADCSRA & 0xf8) | 0x04;  // dividing ratio = 16(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
@@ -1059,27 +1059,18 @@ void sample_dual_ms(unsigned int r) { // dual channel. r > 500 (0x7)
   }
 }
 
-void sample_200us(unsigned int r, byte ad_ch) { // analogRead() with timing, channel 0 or 1. 200us/div 50ksps
-  int *idata;
+void sample_100us(byte r, byte ad_ch) { // register direct with timing, channel 0 or 1. max 100us/div 100ksps
+  byte *pdata, dr;
   if (ad_ch == ad_ch0)
-    idata = (int *) data[0];
+    pdata = data[0];
   else
-    idata = (int *) data[1];
-  ADCSRA = (ADCSRA & 0xf8) | 0x04;  // dividing ratio = 8(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
-  unsigned long st = micros();
-  for (byte i=0; i<SAMPLES; i ++) {
-    while(micros() - st < r) ;
-    *idata++ = analogRead(ad_ch);
-    st += r;
-  }
-  scaleDataArray(ad_ch);
-}
-
-void sample_100us(byte r) { // register direct with timing, channel 0 only. 100us/div 100ksps
-  byte *pdata;
-  ADMUX = (ADMUX & 0xf8) + ad_ch0;
-  ADCSRA = (ADCSRA & 0xf8) | 0x02;  // dividing ratio = 8(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
-  pdata = data[0];
+    pdata = data[1];
+  ADMUX = (ADMUX & 0xf8) + ad_ch;
+  if (r < 11)
+    dr = 0x02;  // dividing ratio = 8(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
+  else
+    dr = 0x04;  // dividing ratio = 8(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
+  ADCSRA = (ADCSRA & 0xf8) | dr;  // dividing ratio = 8(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
   unsigned long st = micros();
   for (int i=0; i<SAMPLES; i ++) {
     while(micros() - st < r) ;
@@ -1089,10 +1080,10 @@ void sample_100us(byte r) { // register direct with timing, channel 0 only. 100u
     *pdata++ = ADCL;            // must read adch low byte first
     *pdata++ = ADCH;            // read adch high byte
   }
-  scaleDataArray(ad_ch0);
+  scaleDataArray(ad_ch);
 }
 
-void sample_51us() {  // full speed, channel 0 only. 51us/div 189ksps
+void sample_49us() {  // full speed, channel 0 only. 49us/div 204ksps
   byte *pdata;
   ADMUX = (ADMUX & 0xf8) + ad_ch0;
   ADCSRA = (ADCSRA & 0xf8) | 0x02;  // dividing ratio = 8(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
