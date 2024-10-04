@@ -124,7 +124,7 @@ void update_ifrq(long diff) {
 }
 
 void disp_dds_freq(void) {
-  display.setTextColor(WHITE, BLACK);
+  display.setTextColor(TXTCOLOR, BGCOLOR);
   display.setCursor(72, 56);
   display.print((double)ifreq * 0.01, 2); display.print(F("Hz"));
 }

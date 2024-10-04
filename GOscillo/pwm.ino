@@ -1,10 +1,15 @@
 #define PWMPin 10
 
-byte duty = 128; // duty ratio
+byte duty = 128;  // duty ratio = duty/256
 byte p_range = 0;
-unsigned int count;
+unsigned short count;
 const int range_min[5] PROGMEM = {1, 8192, 8192, 16384, 16384};
 const int range_div[5] PROGMEM = {1, 8, 64, 256, 1024};
+
+float pulse_frq(void) {   // 0.238Hz <= pulse_frq <= 8MHz
+  long divide = pgm_read_word(&range_div[p_range]);
+  return(16000000.0 / (float)(((long)count + 1) * divide));
+}
 
 void pulse_init() {
   int divide;
@@ -74,28 +79,23 @@ void update_frq(char diff) {
 }
 
 void disp_pulse_frq(void) {
-  float pulse_frq;        // 0.238Hz <= pulse_frq <= 8MHz
-  int divide = pgm_read_word(&range_div[p_range]);
-  pulse_frq = 16000000.0 / (((long)count + 1) * divide);
-  display.setTextColor(WHITE, BLACK);
-  display.setCursor(72, 56);
-  if (pulse_frq < 10.0) {
-    display.print(pulse_frq, 5);
-  } else if (pulse_frq < 100.0) {
-    display.print(pulse_frq, 4);
-  } else if (pulse_frq < 1000.0) {
-    display.print(pulse_frq, 3);
-  } else if (pulse_frq < 10000.0) {
-    display.print(pulse_frq, 2);
-  } else if (pulse_frq < 100000.0) {
-    display.print(pulse_frq, 1);
+  float freq = pulse_frq();
+  if (freq < 10.0) {
+    display.print(freq, 5);
+  } else if (freq < 100.0) {
+    display.print(freq, 4);
+  } else if (freq < 1000.0) {
+    display.print(freq, 3);
+  } else if (freq < 10000.0) {
+    display.print(freq, 2);
+  } else if (freq < 100000.0) {
+    display.print(freq, 1);
   } else {
-    display.print(pulse_frq, 0);
+    display.print(freq, 0);
   }
   display.print(F("Hz"));
-  display.setCursor(72, 48);
-//  display.print(duty*100.0/256.0, 1); display.print('%');
-  display.print(duty*0.390625, 1); display.print('%');
+  display.setCursor(DISPLNG - 30, txtLINE6);
+  display.print(duty*100.0/256.0, 1); display.print('%');
 }
 
 void setCounter(int divide) {

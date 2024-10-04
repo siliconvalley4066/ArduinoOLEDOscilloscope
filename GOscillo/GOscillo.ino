@@ -1,5 +1,5 @@
 /*
- * Arduino Oscilloscope using a 128x64 OLED Version 1.32
+ * Arduino Oscilloscope using a 128x64 OLED Version 1.33
  * The max realtime sampling rates are 17.2ksps with 2 channels and 307ksps with a channel.
  * The max equivalent time sampling rates is 16Msps with single channel.
  * + Pulse Generator
@@ -36,6 +36,9 @@ Adafruit_SH1106 display(OLED_RESET);
 #define txtLINE2   16
 #define txtLINE3   24
 #define txtLINE4   32
+#define txtLINE5   40
+#define txtLINE6   48
+#define txtLINE7   56
 
 float waveFreq;                // frequency (Hz)
 float waveDuty;                // duty ratio (%)
@@ -46,14 +49,16 @@ int saveTimer;                 // remaining time for saving EEPROM
 int timeExec;                  // approx. execution time of current range setting (ms)
 extern byte duty;
 extern byte p_range;
-extern unsigned int count;
+extern unsigned short count;
 extern long ifreq;
 extern byte wave_id;
 
 const int LCD_WIDTH = 128;
 const int LCD_HEIGHT = 64;
+const int LCD_YMAX = 60;
 const int SAMPLES = 128;
 const int DISPLNG = 100;
+const int DOTS_DIV = 10;
 const int ad_ch0 = 0;                   // Analog 0 pin for channel 0
 const int ad_ch1 = 1;                   // Analog 1 pin for channel 1
 const long VREF[] = {49, 98, 244, 488, 976}; // reference voltage 5.0V ->  50 :   1V/div range (100mV/dot)
@@ -61,6 +66,7 @@ const long VREF[] = {49, 98, 244, 488, 976}; // reference voltage 5.0V ->  50 : 
                                         //                        -> 250 : 0.2V/div
                                         //                        -> 500 : 100mV/div
                                         //                       -> 1000 :  50mV/div
+                                        // 5.0V / attn * DOTS_DIV / vdiv
 //const int MILLIVOL_per_dot[] = {100, 50, 20, 10, 5}; // mV/dot
 #define CALPIN 10
 #define CH0DCSW 2
@@ -82,6 +88,9 @@ const int TRIG_E_DN = 1;
 #define RATE_MIN 0
 #define RATE_MAX 19
 #define RATE_NUM 27
+#define RATE_DUAL 5
+#define RATE_SLOW 14
+#define RATE_ROLL 15
 #define ITEM_MAX 29
 const char RN[RATE_NUM][5] PROGMEM = {"33us", "49us", "100u", "200u", "500u", "600u", "800u", " 1ms", " 2ms", " 5ms", "10ms", "20ms", "50ms", "0.1s", "0.2s", "0.5s", " 1s ", " 2s ", " 5s ", " 10s",
                                       "0.6u", "1.3u", "3.1u", "6.3u", "13us", "31us", "63us"};
@@ -100,27 +109,44 @@ byte trig_mode = TRIG_AUTO, trig_lv = 10, trig_edge = TRIG_E_UP, trig_ch = ad_ch
 bool Start = true;  // Start sampling
 byte item = 0;      // Default item
 byte menu = 0;      // Default menu
-short ch0_off = -200, ch1_off = 400;
+short ch0_off = 0, ch1_off = 400;
 byte data[2][SAMPLES];                  // keep the number of channels buffer
 byte odat00, odat01, odat10, odat11;    // old data buffer for erase
 byte sample=0;                          // index for double buffer
 bool fft_mode = false, pulse_mode = false, dds_mode = false, fcount_mode = false;
 bool full_screen = false;
 byte info_mode = 3; // Text information display mode
+int trigger_ad;
+
+#define LEFTPIN   12  // LEFT
+#define RIGHTPIN  9   // RIGHT
+#define UPPIN     7   // UP
+#define DOWNPIN   8   // DOWN
+#define CH0DCSW   2   // DC/AC switch ch0
+#define CH1DCSW   4   // DC/AC switch ch1
+
+#define BGCOLOR   BLACK
+#define GRIDCOLOR WHITE
+#define CH1COLOR  WHITE
+#define CH2COLOR  WHITE
+#define FRMCOLOR  WHITE
+#define TXTCOLOR  WHITE
+#define TRGCOLOR  WHITE
+#define HIGHCOLOR WHITE
 
 void setup(){
-  pinMode(2, INPUT_PULLUP);             // CH1 DC/AC
-//  pinMode(3, OUTPUT);                   // Trigger level PWM out
-  pinMode(4, INPUT_PULLUP);             // CH2 DC/AC
-//  pinMode(5, INPUT);                    // Frequency Counter in
-//  pinMode(6, INPUT);                    // Trigger level AC input
-  pinMode(7, INPUT_PULLUP);             // up
-  pinMode(8, INPUT_PULLUP);             // down
-  pinMode(9, INPUT_PULLUP);             // right
-  pinMode(10, OUTPUT);                  // PWM out
-  pinMode(11, OUTPUT);                  // DDS out
-  pinMode(12, INPUT_PULLUP);            // left
-  DIDR0 = _BV(ADC1D) | _BV(ADC0D);      // disable digital input buffer of A0-A1
+  pinMode(CH0DCSW, INPUT_PULLUP);   // CH1 DC/AC
+//  pinMode(3, OUTPUT);               // Trigger level PWM out
+  pinMode(CH1DCSW, INPUT_PULLUP);   // CH2 DC/AC
+//  pinMode(5, INPUT);                // Frequency Counter in
+//  pinMode(6, INPUT);                // Trigger level AC input
+  pinMode(UPPIN, INPUT_PULLUP);     // up
+  pinMode(DOWNPIN, INPUT_PULLUP);   // down
+  pinMode(RIGHTPIN, INPUT_PULLUP);  // right
+  pinMode(10, OUTPUT);                // PWM out
+  pinMode(11, OUTPUT);                // DDS out
+  pinMode(LEFTPIN, INPUT_PULLUP);   // left
+  DIDR0 = _BV(ADC1D) | _BV(ADC0D);  // disable digital input buffer of A0-A1
 #ifdef DISPLAY_IS_SSD1306
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // select 3C or 3D (set your OLED I2C address)
 #else
@@ -142,520 +168,22 @@ void setup(){
     dds_setup();
 }
 
-byte lastsw = 255;
-unsigned long vtime;
-
-void CheckSW() {
-  static unsigned long Millis = 0;
-  unsigned long ms;
-  byte sw;
-
-  ms = millis();
-  if ((ms - Millis)<200)
-    return;
-  Millis = ms;
-
-/* SW10 Menu
- * SW9  CH1 range down
- * SW8  CH2 range down
- * SW7  TIME/DIV slow
- * SW6  TRIG_MODE down
- * SW5  Send
- * SW4  TRIG_MODE up
- * SW3  TIME/DIV fast
- * SW2  CH2 range up
- * SW1  CH1 range up
- * SW0  Start/Hold
- */
-  if (digitalRead(9) == LOW && digitalRead(12) == LOW) {
-    sw = 11;    // both button press
-  } else if (digitalRead(7) == LOW && digitalRead(8) == LOW) {
-    sw = 12;    // both button press
-  } else if (digitalRead(8) == LOW) {
-    sw = 10;    // down
-  } else if (digitalRead(9) == LOW) {
-    sw = 3;     // right
-  } else if (digitalRead(12) == LOW) {
-    sw = 7;     // left
-  } else if (digitalRead(7) == LOW) {
-    sw = 0;     // up
-  } else {
-    lastsw = 255;
-    return;
-  }
-  if (sw != lastsw)
-    vtime = ms;
-  saveTimer = 5000;     // set EEPROM save timer to 5 secnd
-  if (sw == 12) {
-    full_screen = !full_screen;
-    display.fillRect(DISPLNG + 1,0,27,64, BLACK);  // clear text area that will be drawn below 
-  } else {
-    switch (menu) {
-    case 0:
-      menu0_sw(sw); 
-      break;
-    case 1:
-      menu1_sw(sw); 
-      break;
-    case 2:
-      menu2_sw(sw); 
-      break;
-    case 3:
-      menu3_sw(sw); 
-      break;
-    default:
-      break;
-    }
-    DrawText();
-    display.display();
-  }
-  lastsw = sw;
-}
-
-void updown_ch0range(byte sw) {
-  if (sw == 3) {        // CH0 RANGE +
-    if (range0 > 0)
-      range0 --;
-  } else if (sw == 7) { // CH0 RANGE -
-    if (range0 < RANGE_MAX)
-      range0 ++;
-  }
-}
-
-void updown_ch1range(byte sw) {
-  if (sw == 3) {        // CH1 RANGE +
-    if (range1 > 0)
-      range1 --;
-  } else if (sw == 7) { // CH1 RANGE -
-    if (range1 < RANGE_MAX)
-      range1 ++;
-  }
-}
-
-void updown_rate(byte sw) {
-  if (sw == 3) {        // RATE FAST
-    if (rate > 0 && rate != (RATE_MAX + 1)) rate --;
-    else if (rate == 0) {
-      rate = RATE_NUM - 1;
-      dds_close();  // dds_mode = false;
-    }
-  } else if (sw == 7) { // RATE SLOW
-    if (rate > RATE_NUM - 2) rate = 0;
-    else if (rate != RATE_MAX) rate ++;
-  }
-}
-
-void menu0_sw(byte sw) {  
-  switch (item) {
-  case 0: // CH0 voltage range
-    updown_ch0range(sw);
-    break;
-  case 1: // CH1 voltage range
-    updown_ch1range(sw);
-    break;
-  case 2: // rate
-    updown_rate(sw);
-    break;
-  case 3: // sampling mode
-    break;
-  case 4: // trigger mode
-    if (sw == 3) {        // TRIG MODE +
-      if (trig_mode < TRIG_ONE)
-        trig_mode ++;
-      else
-        trig_mode = 0;
-    } else if (sw == 7) { // TRIG MODE -
-      if (trig_mode > 0)
-        trig_mode --;
-      else
-        trig_mode = TRIG_ONE;
-    }
-    if (trig_mode != TRIG_ONE)
-        Start = true;
-    break;
-  case 5: // trigger source and polarity
-    if (sw == 3) {        // trigger + edge
-      if (trig_edge == TRIG_E_UP)
-        trig_edge = TRIG_E_DN;
-      else
-        trig_edge = TRIG_E_UP;
-    } else if (sw == 7) { // trigger - channel
-      if (trig_ch == ad_ch0)
-        trig_ch = ad_ch1;
-      else
-        trig_ch = ad_ch0;
-    }
-    break;
-  case 6: // trigger level
-    if (sw == 3) {        // trigger level +
-      if (trig_lv < 60)
-        trig_lv ++;
-    } else if (sw == 7) { // trigger level -
-      if (trig_lv > 0)
-        trig_lv --;
-    }
-    break;
-  case 7: // run / hold
-    if (sw == 3 || sw == 7) {
-      Start = !Start;
-    }
-    break;
-  }
-  menu_updown(sw);
-}
-
-void menu1_sw(byte sw) {  
-  switch (item - 8) {
-  case 1: // CH0 mode
-    if (sw == 3) {        // CH0 + ON/INV
-      if (ch0_mode == MODE_ON)
-        ch0_mode = MODE_INV;
-      else
-        ch0_mode = MODE_ON;
-    } else if (sw == 7) { // CH0 - ON/OFF
-      if (ch0_mode == MODE_OFF)
-        ch0_mode = MODE_ON;
-      else
-        ch0_mode = MODE_OFF;
-    }
-    break;
-  case 2: // CH0 voltage range
-    updown_ch0range(sw);
-    break;
-  case 3: // CH0 offset
-    if (sw == 3) {        // offset +
-      if (ch0_off < 1023)
-        ch0_off += 1024/VREF[range0];
-    } else if (sw == 7) { // offset -
-      if (ch0_off > -1023)
-        ch0_off -= 1024/VREF[range0];
-    } else if (sw == 11) { // offset reset
-      if (digitalRead(CH0DCSW) == LOW)    // DC/AC input
-        ch0_off = pgm_read_dword(&ac_offset[range0]);
-      else
-        ch0_off = 0;
-    }
-    break;
-  case 5: // CH1 mode
-    if (sw == 3) {        // CH1 + ON/INV
-      if (ch1_mode == MODE_ON)
-        ch1_mode = MODE_INV;
-      else
-        ch1_mode = MODE_ON;
-    } else if (sw == 7) { // CH1 - ON/OFF
-      if (ch1_mode == MODE_OFF)
-        ch1_mode = MODE_ON;
-      else
-        ch1_mode = MODE_OFF;
-    }
-    break;
-  case 6: // CH1 voltage range
-    updown_ch1range(sw);
-    break;
-  case 7: // CH1 offset
-    if (sw == 3) {        // offset +
-      if (ch1_off < 1023)
-        ch1_off += 1024/VREF[range1];
-    } else if (sw == 7) { // offset -
-      if (ch1_off > -1023)
-        ch1_off -= 1024/VREF[range1];
-    } else if (sw == 11) { // offset reset
-      if (digitalRead(CH1DCSW) == LOW)    // DC/AC input
-        ch1_off = pgm_read_dword(&ac_offset[range1]);
-      else
-        ch1_off = 0;
-    }
-    break;
-  }
-  menu_updown(sw);
-}
-
-void menu2_sw(byte sw) {
-  char diff;
-  switch (item - 16) {
-  case 0: // CH0 voltage range
-    updown_ch0range(sw);
-    break;
-  case 1: // rate
-    updown_rate(sw);
-    break;
-  case 2: // FFT mode
-    if (sw == 3) {        // ON
-      fft_mode = true;
-    } else if (sw == 7) { // OFF
-      fft_mode = false;
-    }
-    break;
-  case 3: // Frequency and Duty display
-    if (sw == 3) {        // ON
-      info_mode |= 1;
-    } else if (sw == 7) { // OFF
-      info_mode &= ~1;
-    }
-    break;
-  case 4: // Voltage display
-    if (sw == 3) {        // ON
-      info_mode |= 2;
-    } else if (sw == 7) { // OFF
-      info_mode &= ~2;
-    }
-    break;
-  case 5: // PWM
-    if (sw == 3) {        // +
-      update_frq(0);
-      pulse_start();
-      pulse_mode = true;
-    } else if (sw == 7) { // -
-      pulse_close();
-      pulse_mode = false;
-    }
-    break;
-  case 6: // PWM Duty ratio
-    diff = 1;
-    if (sw == lastsw) {
-      if (millis() - vtime > 5000) diff = 8;
-    }
-    if (sw == 3) {        // +
-      if (pulse_mode) {
-        if ((256 - duty) > diff) duty += diff;
-      } else {
-        pulse_start();
-      }
-      update_frq(0);
-      pulse_mode = true;
-    } else if (sw == 7) { // -
-      if (pulse_mode) {
-        if (duty > diff) duty -= diff;
-      } else {
-        pulse_start();
-      }
-      update_frq(0);
-      pulse_mode = true;
-    }
-    break;
-  case 7: // PWM Frequency
-    diff = sw_accel(sw);
-    if (sw == 3) {        // +
-      if (pulse_mode)
-        update_frq(-diff);
-      else {
-        update_frq(0);
-        pulse_start();
-      }
-      pulse_mode = true;
-    } else if (sw == 7) { // -
-      if (pulse_mode)
-        update_frq(diff);
-      else {
-        update_frq(0);
-        pulse_start();
-      }
-      pulse_mode = true;
-    }
-    break;
-  }
-  menu_updown(sw);
-}
-
-void menu3_sw(byte sw) {
-  char diff;
-  switch (item - 24) {
-  case 0: // CH0 voltage range
-    updown_ch0range(sw);
-    break;
-  case 1: // rate
-    updown_rate(sw);
-    break;
-  case 2: // DDS
-    if (sw == 3) {        // +
-      fcount_close();
-      dds_setup();
-      dds_mode = true;
-    } else if (sw == 7) { // -
-      dds_close();  // dds_mode = false;
-    }
-    break;
-  case 3: // WAVE
-    if (sw == 3) {        // +
-      rotate_wave(true);
-    } else if (sw == 7) { // -
-      rotate_wave(false);
-    }
-    break;
-  case 4: // FREQ
-    diff = sw_accel(sw);
-    if (sw == 3) {        // +
-      update_ifrq(diff);
-    } else if (sw == 7) { // -
-      update_ifrq(-diff);
-    }
-    break;
-  case 5: // Frequency Counter
-    if (sw == 3 && rate <= RATE_MAX) {  // on
-      dds_close();  // dds_mode = false;
-      pulse_close();
-      pulse_mode = false; fcount_mode = true;
-      FreqCount.begin(1000);
-    } else if (sw == 7) {               // off
-      fcount_close();
-    }
-    break;
-  }
-  menu_updown(sw);
-}
-
-void menu_updown(byte sw) {
-  if (sw == 10) {       // MENU down SW
-    increment_item();
-  } else if (sw == 0) { // Menu up SW
-    decrement_item();
-  }
-}
-
-void increment_item() {
-  ++item;
-  if (item > ITEM_MAX) item = 0;
-  if (menu == 0 && item == 3) item = 4;
-  if (item < 16 || item > 18) fft_mode = false; // exit FFT mode
-  menu = item >> 3;
-}
-
-void decrement_item() {
-  if (item > 0) --item;
-  else item = ITEM_MAX;
-  if (menu == 0 && item == 3) item = 2;
-  if (item < 16 || item > 18) fft_mode = false; // exit FFT mode
-  menu = item >> 3;
-}
-
-byte sw_accel(byte sw) {
-  char diff = 1;
-  if (sw == lastsw) {
-    unsigned long curtime = millis();
-    if (curtime - vtime > 6000) diff = 4;
-    else if (curtime - vtime > 4000) diff = 3;
-    else if (curtime - vtime > 2000) diff = 2;
-  }
-  return (diff);
-}
-
 void DrawGrid() {
   int disp_leng;
   if (full_screen) disp_leng = SAMPLES;
   else disp_leng = DISPLNG;
   for (int x=0; x<=disp_leng; x += 2) { // Horizontal Line
-    for (int y=0; y<=60; y += 10) {
-      display.drawPixel(x, y, WHITE);
+    for (int y=LCD_YMAX; y>=0; y -= DOTS_DIV) {
+      display.drawPixel(x, y, GRIDCOLOR);
       CheckSW();
     }
   }
-  for (int x=0; x<=disp_leng; x += 10 ) { // Vertical Line
-    for (int y=0; y<=60; y += 2) {
-      display.drawPixel(x, y, WHITE);
+  for (int x=0; x<=disp_leng; x += DOTS_DIV ) { // Vertical Line
+    for (int y=LCD_YMAX; y>=0; y -= 2) {
+      display.drawPixel(x, y, GRIDCOLOR);
       CheckSW();
     }
   }
-}
-
-void DrawText() {
-  display.fillRect(DISPLNG+1,0,27,64, BLACK);  // clear text area that will be drawn below 
-
-  switch (menu) {
-  case 0:
-    set_line_color(0);
-    if (ch0_mode != MODE_OFF) {
-      display_range(range0);
-    } else {
-      display.print(F("CH2")); display_ac(CH1DCSW);
-    }
-    set_line_color(1);
-    if (ch1_mode != MODE_OFF && rate > 4 && rate < (RATE_MAX + 1)) {
-      display_range(range1);
-    } else {
-      display.print(F("CH1")); display_ac(CH0DCSW);
-    }
-    set_line_color(2);
-    display_rate();
-    set_line_color(3);
-    if (rate <= RATE_MAX) display.print(F("real"));
-    else display.print(F("eqiv"));
-    set_line_color(4);
-    display_trig_mode();
-    set_line_color(5);
-    display.print(trig_ch == ad_ch0 ? F("TG1") : F("TG2")); 
-    display.print(trig_edge == TRIG_E_UP ? char(0x18) : char(0x19)); 
-    set_line_color(6);
-    display.print(F("Tlev")); 
-    set_line_color(7);
-    display.print(Start ? F("RUN") : F("HOLD")); 
-    break;
-  case 1:
-    set_line_color(0);
-    display.print(F("CH1")); display_ac(CH0DCSW);
-    set_line_color(1);
-    display_mode(ch0_mode);
-    set_line_color(2);
-    display_range(range0);
-    set_line_color(3);
-    display.print(F("OFS1")); 
-    set_line_color(4);
-    display.print(F("CH2")); display_ac(CH1DCSW);
-    set_line_color(5);
-    display_mode(ch1_mode);
-    set_line_color(6);
-    display_range(range1);
-    set_line_color(7);
-    display.print(F("OFS2"));
-    break;
-  case 2:
-    set_line_color(0);
-    display_range(range0);
-    set_line_color(1);
-    display_rate();
-    set_line_color(2);
-    if (!fft_mode) {
-      display.print(F("FFT")); 
-      set_line_color(3);
-      display.print(F("FREQ")); 
-      set_line_color(4);
-      display.print(F("VOLT")); 
-      set_line_color(5);
-      display.print(F("PWM")); 
-      set_line_color(6);
-      display.print(F("DUTY")); 
-      set_line_color(7);
-      display.print(F("FREQ"));
-      if (pulse_mode && (item > 20 && item < 24))
-        disp_pulse_frq();
-    }
-    break;
-  case 3:
-    set_line_color(0);
-    display_range(range0);
-    set_line_color(1);
-    display_rate();
-    set_line_color(2);
-    display.print(F("DDS"));
-    set_line_color(3);
-    disp_dds_wave();
-    set_line_color(4);
-    display.print(F("FREQ"));
-    if (dds_mode) disp_dds_freq();
-    set_line_color(5);
-    display.print(F("FCNT"));
-    fcount_disp();
-    break;
-  }
-//  if (info_mode && Start) {
-  if (info_mode) {
-    dataAnalize();
-    if (info_mode & 1)
-      measure_frequency();
-    if (info_mode & 2)
-      measure_voltage();
-  }
-  if (!full_screen && !fft_mode)
-    display.drawFastHLine(DISPLNG, 60 - trig_lv, 3, WHITE); // draw trig_lv tic
 }
 
 unsigned long fcount = 0;
@@ -667,7 +195,7 @@ void fcount_disp() {
     fcount = FreqCount.read();
     fcount = fcount * freq_ratio; // compensate the ceramic osc
   }
-  display.setTextColor(WHITE, BLACK); display.setCursor(74, 48);
+  display.setTextColor(TXTCOLOR, BGCOLOR); display.setCursor(74, 48);
   display.print(fcount); display.print(F("Hz"));
 }
 
@@ -689,7 +217,7 @@ void display_rate(void) {
 
 void display_mode(byte chmode) {
   char str[5];
-  display.print(strcpy_P(str, (char*)pgm_read_word(&(Modes[chmode])))); 
+  display.print(strcpy_P(str, (char*)pgm_read_word(&(Modes[chmode]))));
 }
 
 void display_trig_mode(void) {
@@ -702,18 +230,18 @@ void display_ac(byte pin) {
 }
 
 void set_line_color(byte line) {
-  if ((item & 0x7) == line) display.setTextColor(BLACK, WHITE);  // highlight
-  else display.setTextColor(WHITE, BLACK);            // normal
-  display.setCursor(DISPLNG + 3, 8 * line); // locate curser for printing text
+  if ((item & 0x7) == line) display.setTextColor(BGCOLOR, TXTCOLOR);  // highlight
+  else display.setTextColor(TXTCOLOR, BGCOLOR);           // normal
+  display.setCursor(DISPLNG + 3, 8 * line);  // locate curser for printing text
 }
 
 void DrawGrid(int x) {
   if ((x % 2) == 0)
-    for (int y=0; y<=60; y += 10)
-      display.drawPixel(x, y, WHITE);
+    for (int y=0; y<=LCD_YMAX; y += 10)
+      display.drawPixel(x, y, GRIDCOLOR);
   if ((x % 10) == 0)
-    for (int y=0; y<=60; y += 2)
-      display.drawPixel(x, y, WHITE);
+    for (int y=0; y<=LCD_YMAX; y += 2)
+      display.drawPixel(x, y, GRIDCOLOR);
 }
 
 void ClearAndDrawGraph() {
@@ -722,42 +250,45 @@ void ClearAndDrawGraph() {
   else disp_leng = DISPLNG-1;
   bool ch1_active = ch1_mode != MODE_OFF && rate > 4 && rate <= RATE_MAX;
 #if 0
-  for (int x=0; x<DISPLNG; x++) {
-    display.drawPixel(x, 60-data[sample+0][x], WHITE);
-    display.drawPixel(x, 60-data[sample+1][x], WHITE);
+  for (int x=0; x<disp_leng; x++) {
+    display.drawPixel(x, LCD_YMAX-data[sample+0][x], CH1COLOR);
+    display.drawPixel(x, LCD_YMAX-data[sample+1][x], CH2COLOR);
   }
 #else
   for (int x=0; x<disp_leng; x++) {
-    if (ch0_mode != MODE_OFF)
-      display.drawLine(x, 60-data[sample+0][x], x+1, 60-data[sample+0][x+1], WHITE);
-    if (ch1_active)
-      display.drawLine(x, 60-data[sample+1][x], x+1, 60-data[sample+1][x+1], WHITE);
+    if (ch0_mode != MODE_OFF) {
+      display.drawLine(x, LCD_YMAX-data[sample+0][x], x+1, LCD_YMAX-data[sample+0][x+1], CH1COLOR);
+    }
+    if (ch1_active) {
+      display.drawLine(x, LCD_YMAX-data[sample+1][x], x+1, LCD_YMAX-data[sample+1][x+1], CH2COLOR);
+    }
     CheckSW();
   }
 #endif
 }
 
 void ClearAndDrawDot(int i) {
+  DrawGrid(i);
 #if 0
   for (int x=0; x<DISPLNG; x++) {
-    display.drawPixel(i, 60-odat01, BLACK);
-    display.drawPixel(i, 60-odat11, BLACK);
-    display.drawPixel(i, 60-data[sample+0][i], WHITE);
-    display.drawPixel(i, 60-data[sample+1][i], WHITE);
+    display.drawPixel(i, LCD_YMAX-odat01, BGCOLOR);
+    display.drawPixel(i, LCD_YMAX-odat11, BGCOLOR);
+    display.drawPixel(i, LCD_YMAX-data[sample+0][i], CH1COLOR);
+    display.drawPixel(i, LCD_YMAX-data[sample+1][i], CH2COLOR);
   }
 #else
-  if (i < 1)
+  if (i < 1) {
     return;
+  }
   if (ch0_mode != MODE_OFF) {
-    display.drawLine(i-1, 60-odat00,   i, 60-odat01, BLACK);
-    display.drawLine(i-1, 60-data[0][i-1], i, 60-data[0][i], WHITE);
+    display.drawLine(i-1, LCD_YMAX-odat00,   i, LCD_YMAX-odat01, BGCOLOR);
+    display.drawLine(i-1, LCD_YMAX-data[0][i-1], i, LCD_YMAX-data[0][i], CH1COLOR);
   }
   if (ch1_mode != MODE_OFF) {
-    display.drawLine(i-1, 60-odat10,   i, 60-odat11, BLACK);
-    display.drawLine(i-1, 60-data[1][i-1], i, 60-data[1][i], WHITE);
+    display.drawLine(i-1, LCD_YMAX-odat10,   i, LCD_YMAX-odat11, BGCOLOR);
+    display.drawLine(i-1, LCD_YMAX-data[1][i-1], i, LCD_YMAX-data[1][i], CH2COLOR);
   }
 #endif
-  DrawGrid(i);
 }
 
 //void scaleDataArray()
@@ -770,10 +301,10 @@ void ClearAndDrawDot(int i) {
 //  pdata = data[0];
 //  for (int i = 0; i < SAMPLES; i++) {
 //    a = ((*idata++ + ch0_off) * VREF[range0] + 512) >> 10;
-//    if (a > 60) a = 60;
+//    if (a > LCD_YMAX) a = LCD_YMAX;
 //    else if (a < 0) a = 0;
 //    if (ch0_mode == MODE_INV)
-//      a = 60 - a;
+//      a = LCD_YMAX - a;
 //    *pdata++ = (byte) a;
 //  }
 //}
@@ -794,14 +325,14 @@ void scaleDataArray(byte ad_ch)
     ch_mode = ch0_mode;
     range = range0;
   }
-  idata = (int *) data[0];
-  pdata = data[0];
+  idata = (int *) data[sample+ad_ch];
+  pdata = data[sample+ad_ch];
   for (int i = 0; i < SAMPLES; i++) {
     a = ((*idata++ + ch_off) * VREF[range] + 512) >> 10;
-    if (a > 60) a = 60;
+    if (a > LCD_YMAX) a = LCD_YMAX;
     else if (a < 0) a = 0;
     if (ch_mode == MODE_INV)
-      a = 60 - a;
+      a = LCD_YMAX - a;
     *pdata++ = (byte) a;
   }
 }
@@ -810,32 +341,34 @@ byte adRead(byte ch, byte mode, int off)
 {
   long a = analogRead(ch);
   a = ((a+off)*VREF[ch == ad_ch0 ? range0 : range1]+512) >> 10;
-  if (a > 60) a = 60;
+  if (a > LCD_YMAX) a = LCD_YMAX;
   else if (a < 0) a = 0;
   if (mode == MODE_INV)
-    return 60 - a;
+    return LCD_YMAX - a;
   return a;
 }
 
 int advalue(int value, long vref, byte mode, int offs) {
   if (mode == MODE_INV)
-    value = 60 - value;
-//  return (((long)value << 10) - 512L) / vref - offs;
+    value = LCD_YMAX - value;
   return ((long)value << 10) / vref - offs;
+}
+
+void set_trigger_ad() {
+  if (trig_ch == ad_ch0) {
+    trigger_ad = advalue(trig_lv, VREF[range0], ch0_mode, ch0_off);
+  } else {
+    trigger_ad = advalue(trig_lv, VREF[range1], ch1_mode, ch1_off);
+  }
 }
 
 void loop() {
   int oad, ad;
   unsigned long auto_time;
-  int trigger_ad;
 
   timeExec = 100;
   if (rate <= RATE_MAX) {
-    if (trig_ch == ad_ch0) {
-      trigger_ad = advalue(trig_lv, VREF[range0], ch0_mode, ch0_off);
-    } else {
-      trigger_ad = advalue(trig_lv, VREF[range1], ch1_mode, ch1_off);
-    }
+    set_trigger_ad();
     ADCSRA = (ADCSRA & 0x07)| _BV(ADEN) | _BV(ADIF);  // Auto Trigger disable
     ADCSRB &= 0xf8;   // Auto Trigger source free run
     auto_time = pow(10, rate / 3);
@@ -856,7 +389,7 @@ void loop() {
         }
         oad = ad;
 
-        if (rate > 14)
+        if (rate > RATE_SLOW)
           CheckSW();      // no need for fast sampling
         if (trig_mode == TRIG_SCAN)
           break;
@@ -865,9 +398,9 @@ void loop() {
       }
     }
   }
-  
+
   // sample and draw depending on the sampling rate
-  if (rate <= 14 && Start) {
+  if (rate < RATE_ROLL && Start) {
 
     if (rate == 0) { // full speed, channel 0 only 3.25us sampling
       sample_33us();
@@ -898,13 +431,13 @@ void loop() {
 //    unsigned long st0 = millis();
     unsigned long st = micros();
     for (int i=0; i<disp_leng; i ++) {
-      r = pgm_read_dword(r_ + rate - 15);  // rate may be changed in loop
+      r = pgm_read_dword(r_ + rate - RATE_ROLL);  // rate may be changed in loop
       while((st - micros())<r) {
         CheckSW();
-        if (rate<15)
+        if (rate < RATE_ROLL)
           break;
       }
-      if (rate<15) { // sampling rate has been changed
+      if (rate<RATE_ROLL) { // sampling rate has been changed
         display.clearDisplay();
         break;
       }
@@ -957,31 +490,33 @@ void draw_screen() {
   display.display();
 }
 
-#define textINFO 54
-void measure_frequency() {
-  int x1, x2;
-  freqDuty();
-  display.setTextColor(WHITE, BLACK);
+#define textINFO (DISPLNG-48)
+void measure_frequency(int ch) {
+  freqDuty(ch);
   display.setCursor(textINFO, txtLINE0);
-  if (waveFreq < 999.5)
-    display.print(waveFreq);
-  else if (waveFreq < 999999.5)
-    display.print(waveFreq, 0);
+  float freq = waveFreq;
+  if (freq < 999.5)
+    display.print(freq);
+  else if (freq < 999999.5)
+    display.print(freq, 0);
   else {
-    display.print(waveFreq/1000.0, 0);
+    display.print(freq/1000.0, 0);
     display.print('k');
   }
   display.print(F("Hz"));
   if (fft_mode) return;
+  float duty = waveDuty;
+  if (duty > 99.9499) duty = 99.9;
   display.setCursor(textINFO + 12, txtLINE1);
-  display.print(waveDuty);  display.print('%');
+  display.print(duty, 1);  display.print('%');
 }
 
-void measure_voltage() {
+void measure_voltage(int ch) {
   int x, dave, dmax, dmin;
   if (fft_mode) return;
-  if (ch0_mode == MODE_INV) {
-    dave = 60 * 10 - dataAve;
+  byte ch_mode = (ch == 0) ? ch0_mode : ch1_mode;
+  if (ch_mode == MODE_INV) {
+    dave = LCD_YMAX * 10 - dataAve;
     dmax = dataMin;
     dmin = dataMax;
   } else {
@@ -989,9 +524,11 @@ void measure_voltage() {
     dmax = dataMax;
     dmin = dataMin;
   }
-  float vavr = VRF * (((dave * 102.4) - 512.0) / VREF[range0] - ch0_off) / 1023.0;
-  float vmax = VRF * advalue(dmax, VREF[range0], ch0_mode, ch0_off) / 1023.0;
-  float vmin = VRF * advalue(dmin, VREF[range0], ch0_mode, ch0_off) / 1023.0;
+  short ch_off = (ch == 0) ? ch0_off : ch1_off;
+  long vref = (ch == 0) ? VREF[range0] : VREF[range1];
+  float vavr = VRF * (((dave * 102.4) - 512.0) / vref - ch_off) / 1023.0;
+  float vmax = VRF * advalue(dmax, vref, ch_mode, ch_off) / 1023.0;
+  float vmin = VRF * advalue(dmin, vref, ch_mode, ch_off) / 1023.0;
   display.setCursor(textINFO, txtLINE2);
   display.print(F("max"));  display.print(vmax); if (vmax >= 0.0) display.print('V');
   display.setCursor(textINFO, txtLINE3);
@@ -1008,7 +545,7 @@ void sample_dual_600us() { // dual channel full speed. 60us sampling (0x4)
   } else {
     byte *p0, *p1;
     ADCSRA = (ADCSRA & 0xf8) | 0x04;  // dividing ratio = 16(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
-    p0 = data[0]; p1 = data[1];
+    p0 = data[sample+0]; p1 = data[sample+1];
     for (int i=0; i<SAMPLES; i ++) {
       *p0++ = adRead(ad_ch0, ch0_mode, ch0_off);
       *p1++ = adRead(ad_ch1, ch1_mode, ch1_off);
@@ -1019,7 +556,7 @@ void sample_dual_600us() { // dual channel full speed. 60us sampling (0x4)
 void sample_dual_us(unsigned int r) { // dual channel. r > 67 (0x4)
   byte *p0, *p1;
   ADCSRA = (ADCSRA & 0xf8) | 0x04;  // dividing ratio = 16(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
-  p0 = data[0]; p1 = data[1];
+  p0 = data[sample+0]; p1 = data[sample+1];
   if (ch0_mode != MODE_OFF && ch1_mode == MODE_OFF) {
     unsigned long st = micros();
     for (int i=0; i<SAMPLES; i ++) {
@@ -1053,18 +590,18 @@ void sample_dual_ms(unsigned int r) { // dual channel. r > 500 (0x7)
     while(micros() - st < r) ;
     st += r;
     if (ch0_mode != MODE_OFF)
-      data[0][i] = adRead(ad_ch0, ch0_mode, ch0_off);
+      data[sample+0][i] = adRead(ad_ch0, ch0_mode, ch0_off);
     if (ch1_mode != MODE_OFF)
-      data[1][i] = adRead(ad_ch1, ch1_mode, ch1_off);
+      data[sample+1][i] = adRead(ad_ch1, ch1_mode, ch1_off);
   }
 }
 
 void sample_100us(byte r, byte ad_ch) { // register direct with timing, channel 0 or 1. max 100us/div 100ksps
   byte *pdata, dr;
   if (ad_ch == ad_ch0)
-    pdata = data[0];
+    pdata = data[sample+0];
   else
-    pdata = data[1];
+    pdata = data[sample+1];
   ADMUX = (ADMUX & 0xf8) + ad_ch;
   if (r < 11)
     dr = 0x02;  // dividing ratio = 8(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
@@ -1087,7 +624,7 @@ void sample_49us() {  // full speed, channel 0 only. 49us/div 204ksps
   byte *pdata;
   ADMUX = (ADMUX & 0xf8) + ad_ch0;
   ADCSRA = (ADCSRA & 0xf8) | 0x02;  // dividing ratio = 8(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
-  pdata = data[0];
+  pdata = data[sample+0];
 //  unsigned long st0 = micros();
   unsigned long st = micros();
   for (int i=0; i<SAMPLES; i ++) {
@@ -1104,7 +641,7 @@ void sample_33us() {  // full speed, channel 0 only ADC free run. 32.5us/div 308
   byte *pdata;
   ADMUX = (ADMUX & 0xf8) + ad_ch0;
   ADCSRA = (ADCSRA & 0xf8)| 0x62; // Auto Trigger Enable. dividing ratio = 4(0x1=2, 0x2=4, 0x3=8, 0x4=16, 0x5=32, 0x6=64, 0x7=128)
-  pdata = data[0];
+  pdata = data[sample+0];
   for (int i=0; i<SAMPLES; i ++) {
     while ((ADCSRA&0x10)==0) ;  // polling until adif==1
     ADCSRA |= 0x10;             // clear adif
@@ -1117,7 +654,7 @@ void sample_33us() {  // full speed, channel 0 only ADC free run. 32.5us/div 308
 
 void plotFFT() {
   char *im, *re;
-  int ylim = 56;
+  int ylim = LCD_HEIGHT - 8;
 
   re = data[0];
   im = data[1];  // use ch1 buffer for imaginary data
@@ -1133,21 +670,17 @@ void plotFFT() {
   for (int i = 1; i < FFT_N/2; i++) {
     int dat = sqrt(re[i] * re[i] + im[i] * im[i]);
     dat = constrain(dat, 0, ylim);
-    display.drawFastVLine(i * 2, ylim - dat, dat, WHITE);
+    display.drawFastVLine(i * 2, ylim - dat, dat, CH1COLOR);
   }
   draw_scale();
 }
 
 void draw_scale() {
-  int ylim = 56;
+  int ylim = LCD_HEIGHT - 8;
   float fhref, nyquist;
-  display.setTextColor(WHITE);
+  display.setTextColor(TXTCOLOR);
   display.setCursor(0, ylim); display.print(F("0Hz")); 
-  if (rate > RATE_MAX) {
-    fhref = ethref();
-  } else {
-    fhref = (float)pgm_read_dword(&HREF[rate]);
-  }
+  fhref = freqhref();
   nyquist = 5.0e6 / fhref; // Nyquist frequency
   if (nyquist > 999.0) {
     nyquist = nyquist / 1000.0;
@@ -1166,6 +699,16 @@ void draw_scale() {
     display.setCursor(58, ylim); display.print(nyquist/2,0);
     display.setCursor(110, ylim); display.print(nyquist,0);
   }
+}
+
+float freqhref() {
+  float fhref;
+  if (rate > RATE_MAX) {
+    fhref = ethref();
+  } else {
+    fhref = (float)pgm_read_dword(&HREF[rate]);
+  }
+  return fhref;
 }
 
 #define EEPROM_START 64
@@ -1208,7 +751,7 @@ void saveEEPROM() {                   // Save the setting value in EEPROM after 
 void set_default() {
   range0 = RANGE_MIN;
   ch0_mode = MODE_ON;
-  ch0_off = -200;
+  ch0_off = 0;
   range1 = RANGE_MIN;
   ch1_mode = MODE_ON;
   ch1_off = 400;
@@ -1256,7 +799,7 @@ void loadEEPROM() { // Read setting values from EEPROM (abnormal values will be 
   trig_mode = EEPROM.read(p++);             // trig_mode
   if (trig_mode > TRIG_SCAN) ++error;
   trig_lv = EEPROM.read(p++);               // trig_lv
-  if (trig_lv > 60) ++error;
+  if (trig_lv > LCD_YMAX) ++error;
   trig_edge = EEPROM.read(p++);             // trig_edge
   if (trig_edge > 1) ++error;
   trig_ch = EEPROM.read(p++);               // trig_ch
@@ -1272,7 +815,7 @@ void loadEEPROM() { // Read setting values from EEPROM (abnormal values will be 
   if (p_range > 4) ++error;
   *((byte *)&count) = EEPROM.read(p++);     // count low
   *((byte *)&count + 1) = EEPROM.read(p++); // count high
-  dds_mode = EEPROM.read(p++);              // DDS wave id
+  dds_mode = EEPROM.read(p++);              // DDS mode
   wave_id = EEPROM.read(p++);               // DDS wave id
   if (wave_id >= wave_num) ++error;
   *((byte *)&ifreq) = EEPROM.read(p++);     // ifreq low
